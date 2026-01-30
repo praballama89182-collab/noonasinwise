@@ -1,7 +1,152 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
+from io import BytesIOimport streamlit as st
+import pandas as pd
+import numpy as np
 from io import BytesIO
+
+st.set_page_config(page_title="FINAL NOON SKU WISE", page_icon="🕛", layout="wide")
+
+# Master Noon Brand Mapping
+BRAND_MAP = {
+    'maison_de_lavenir': 'Maison de l’Avenir',
+    'creation_lamis': 'Creation Lamis',
+    'jean_paul_dupont': 'Jean Paul Dupont',
+    'paris_collection': 'Paris Collection',
+    'dorall_collection': 'Dorall Collection',
+    'cp_trendies': 'CP Trendies'
+}
+
+def clean_numeric(val):
+    """Safely converts strings with currency/commas to floats."""
+    if isinstance(val, str):
+        cleaned = val.replace('AED', '').replace('$', '').replace('\xa0', '').replace(',', '').strip()
+        try: return pd.to_numeric(cleaned)
+        except: return 0.0
+    return val if isinstance(val, (int, float)) else 0.0
+
+def load_flexible_df(file):
+    """Loads any spreadsheet type and sanitizes headers."""
+    if file.name.endswith('.csv'):
+        df = pd.read_csv(file)
+    elif file.name.endswith('.txt'):
+        df = pd.read_csv(file, sep='\t')
+    else:
+        df = pd.read_excel(file)
+    df.columns = [str(c).strip() for c in df.columns]
+    return df
+
+st.title("🕛 FINAL NOON SKU WISE")
+st.info("Consolidated Noon Audit: Mapping Ad Sku, Sales Export, and Inventory")
+
+st.sidebar.header("Upload Noon Reports")
+sales_file = st.sidebar.file_uploader("1. Noon Sales Export", type=["csv", "xlsx", "xls", "txt"])
+ad_files = st.sidebar.file_uploader("2. Noon Ad SKU Reports (Multiple Allowed)", type=["csv", "xlsx"], accept_multiple_files=True)
+inv_file = st.sidebar.file_uploader("3. Noon Inventory Report", type=["csv", "xlsx", "xls", "txt"])
+
+if sales_file and ad_files:
+    # 1. Process Sales (Primary Data)
+    sales_raw = load_flexible_df(sales_file)
+    # Cast SKU to string to prevent TypeErrors during merge
+    sales_raw['sku'] = sales_raw['sku'].astype(str).str.strip()
+    sales_raw['gmv_lcy'] = sales_raw['gmv_lcy'].apply(clean_numeric)
+    
+    sales_base = sales_raw.groupby(['sku', 'partner_sku', 'brand_code'], as_index=False)['gmv_lcy'].sum()
+    sales_base.rename(columns={'sku': 'Noon SKU', 'partner_sku': 'Partner SKU', 'brand_code': 'Brand_Key', 'gmv_lcy': 'Total Sales'}, inplace=True)
+    sales_base['Brand'] = sales_base['Brand_Key'].map(BRAND_MAP).fillna(sales_base['Brand_Key'])
+
+    # 2. Process Combined Ads (Bridge Logic)
+    ad_list = []
+    for f in ad_files:
+        df_tmp = load_flexible_df(f)
+        if 'Sku' in df_tmp.columns:
+            # Filter out 'header' or summary rows often found in Noon exports
+            df_tmp = df_tmp[df_tmp['Sku'] != 'header'].copy()
+            df_tmp['Sku'] = df_tmp['Sku'].astype(str).str.strip()
+            ad_list.append(df_tmp)
+    
+    if ad_list:
+        ads_combined = pd.concat(ad_list, ignore_index=True)
+        ad_metrics = ['Spends', 'Revenue', 'Clicks', 'Views', 'Orders']
+        for c in ad_metrics:
+            if c in ads_combined.columns: ads_combined[c] = ads_combined[c].apply(clean_numeric)
+
+        # SKU Totals for Organic Calc
+        ads_sku_totals = ads_combined.groupby('Sku', as_index=False).agg({'Revenue': 'sum', 'Spends': 'sum'})
+        ads_sku_totals.columns = ['Ad_SKU_Match', 'SKU_AD_SALES', 'SKU_AD_SPEND']
+        
+        # Campaign + SKU level for the table
+        ads_camp_grouped = ads_combined.groupby(['Campaign Name', 'Sku'], as_index=False).agg({
+            'Spends': 'sum', 'Revenue': 'sum', 'Clicks': 'sum', 'Views': 'sum', 'Orders': 'sum'
+        })
+    else:
+        st.error("Uploaded Ad files are missing the 'Sku' column.")
+        st.stop()
+
+    # 3. Process Inventory
+    if inv_file:
+        inv_raw = load_flexible_df(inv_file)
+        inv_raw['sku'] = inv_raw['sku'].astype(str).str.strip()
+        inv_raw['qty'] = inv_raw['qty'].apply(clean_numeric)
+        inv_grouped = inv_raw.groupby('sku', as_index=False)['qty'].sum()
+        inv_grouped.columns = ['Inv_SKU_Match', 'Stock']
+    else:
+        inv_grouped = pd.DataFrame(columns=['Inv_SKU_Match', 'Stock'])
+
+    # 4. Final Triple-Merge
+    merged = pd.merge(sales_base, ads_camp_grouped, left_on='Noon SKU', right_on='Sku', how='left')
+    merged = pd.merge(merged, ads_sku_totals, left_on='Noon SKU', right_on='Ad_SKU_Match', how='left').fillna(0)
+    merged = pd.merge(merged, inv_grouped, left_on='Noon SKU', right_on='Inv_SKU_Match', how='left').fillna(0)
+
+    # 5. KPI Logic
+    merged['Campaign'] = merged['Campaign Name'].replace(0, "Organic")
+    merged['Organic Sales'] = merged['Total Sales'] - merged['SKU_AD_SALES']
+    merged['DRR'] = merged['Total Sales'] / 30
+    merged['ROAS'] = (merged['Revenue'] / merged['Spends']).replace([np.inf, -np.inf], 0).fillna(0)
+    merged['ACOS'] = (merged['Spends'] / merged['Revenue']).replace([np.inf, -np.inf], 0).fillna(0)
+    merged['TACOS'] = (merged['SKU_AD_SPEND'] / merged['Total Sales']).replace([np.inf, -np.inf], 0).fillna(0)
+
+    # UI Rendering
+    tabs = st.tabs(["🌍 Portfolio Overview"] + sorted(list(BRAND_MAP.values())))
+    table_cols = ['Campaign', 'Partner SKU', 'Noon SKU', 'Stock', 'Total Sales', 'DRR', 'Revenue', 'Spends', 'Organic Sales', 'ROAS', 'ACOS', 'TACOS']
+
+    def render_dashboard(sales_df, ads_df):
+        t_sales = sales_df['gmv_lcy'].sum()
+        a_sales = ads_df['Revenue'].sum()
+        t_spend = ads_df['Spends'].sum()
+        st.markdown("#### 💰 Portfolio KPIs (Numeric)")
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Total Sales", f"{t_sales:,.2f}")
+        c2.metric("Ad Sales", f"{a_sales:,.2f}")
+        c3.metric("Organic Sales", f"{(t_sales-a_sales):,.2f}")
+        c4.metric("Ad Spend", f"{t_spend:,.2f}")
+        e1, e2, e3 = st.columns(3)
+        e1.metric("ROAS", f"{(a_sales/t_spend if t_spend > 0 else 0):.2f}")
+        e2.metric("TACOS", f"{(t_spend/t_sales if t_sales > 0 else 0):.1%}")
+        e3.metric("Ad Contrib.", f"{(a_sales/t_sales):.1%}")
+
+    with tabs[0]:
+        render_dashboard(sales_raw, ads_combined)
+        st.divider()
+        st.dataframe(merged[table_cols].sort_values(by='Total Sales', ascending=False), hide_index=True, use_container_width=True)
+
+    for i, (key, b_name) in enumerate(sorted(BRAND_MAP.items())):
+        with tabs[i+1]:
+            b_table = merged[merged['Brand_Key'] == key]
+            if not b_table.empty:
+                b_sales = sales_raw[sales_raw['brand_code'] == key]
+                b_ads = ads_combined[ads_combined['Sku'].isin(b_table['Noon SKU'])]
+                render_dashboard(b_sales, b_ads)
+                st.divider()
+                st.dataframe(b_table[table_cols].sort_values(by='Total Sales', ascending=False), hide_index=True, use_container_width=True)
+
+    output = BytesIO()
+    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+        merged[table_cols].to_excel(writer, sheet_name='MASTER_AUDIT', index=False)
+    st.sidebar.download_button("📥 Download Master Report", data=output.getvalue(), file_name="Noon_Master_Audit.xlsx", use_container_width=True)
+else:
+    st.info("Upload Sales, Ad SKU, and Inventory files to begin.")
 
 st.set_page_config(page_title="FINAL NOON SKU WISE", page_icon="🕛", layout="wide")
 
@@ -156,3 +301,4 @@ if sales_file and ad_file:
     st.sidebar.download_button("📥 Download Master Report", data=output.getvalue(), file_name="Noon_Master_Audit.xlsx", use_container_width=True)
 else:
     st.info("Upload Noon Sales, Ads, and Inventory to begin.")
+
