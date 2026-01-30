@@ -16,6 +16,7 @@ BRAND_MAP = {
 }
 
 def clean_numeric(val):
+    """Deep clean of currency, commas, and non-breaking spaces to return pure numbers."""
     if isinstance(val, str):
         cleaned = val.replace('AED', '').replace('$', '').replace('\xa0', '').replace(',', '').strip()
         try: return pd.to_numeric(cleaned)
@@ -23,6 +24,7 @@ def clean_numeric(val):
     return val if isinstance(val, (int, float)) else 0.0
 
 def load_flexible_df(file):
+    """Loads CSV or Excel based on file extension and cleans headers."""
     if file.name.endswith('.csv'):
         df = pd.read_csv(file)
     else:
@@ -31,7 +33,7 @@ def load_flexible_df(file):
     return df
 
 st.title("🕛 FINAL NOON SKU WISE")
-st.info("Noon Strategic Audit: Campaign-to-SKU Mapping, Organic Isolation, and Stock Tracking")
+st.info("Verified Framework: Pure Numeric Metrics, Campaign-to-SKU Mapping, and Stock Integration")
 
 st.sidebar.header("Upload Noon Reports")
 sales_file = st.sidebar.file_uploader("1. Noon Sales Export", type=["csv", "xlsx", "xls"])
@@ -70,7 +72,7 @@ if sales_file and ad_sku_file:
         'Spends': 'sum', 'Revenue': 'sum', 'Clicks': 'sum', 'Views': 'sum', 'Orders': 'sum'
     }).reset_index()
 
-    # Per-SKU Totals
+    # Per-SKU Totals for Organic Isolation
     ad_sku_total = ad_sku_raw.groupby('Sku').agg({
         'Revenue': 'sum', 'Spends': 'sum'
     }).rename(columns={'Revenue': 'SKU_AD_TOTAL_SALES', 'Spends': 'SKU_AD_TOTAL_SPEND'}).reset_index()
@@ -82,7 +84,7 @@ if sales_file and ad_sku_file:
     else:
         inv_summary = pd.DataFrame(columns=['inv_sku', 'Stock'])
 
-    # 5. Final Merge
+    # 5. Final Merge (Campaign-First)
     merged_df = pd.merge(sales_summary, ad_camp_summary, left_on='sku', right_on='Sku', how='left')
     merged_df = pd.merge(merged_df, ad_sku_total, left_on='sku', right_on='Sku', how='left').fillna(0)
     merged_df = pd.merge(merged_df, inv_summary, left_on='sku', right_on='inv_sku', how='left').fillna(0)
@@ -114,7 +116,7 @@ if sales_file and ad_sku_file:
         o_sales = t_sales - a_sales
         t_spend = raw_ad['Spends'].sum()
         
-        st.markdown("#### 💰 Sales & Volume")
+        st.markdown("#### 💰 Sales & Volume (Pure Numbers)")
         c1, c2, c3, c4, c5 = st.columns(5)
         c1.metric("Total Sales", f"{t_sales:,.2f}")
         c2.metric("Ad Sales", f"{a_sales:,.2f}")
@@ -163,4 +165,4 @@ if sales_file and ad_sku_file:
                 b_sheet[cols_to_show].to_excel(writer, sheet_name=b_name[:31], index=False)
     st.sidebar.download_button("📥 Download Master Report", data=output.getvalue(), file_name="Noon_Master_SKU_Audit.xlsx", use_container_width=True)
 else:
-    st.info("Upload Noon Reports to begin.")
+    st.info("Upload Noon Sales, Ad SKU, and Inventory reports to begin.")
