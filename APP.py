@@ -5,7 +5,7 @@ from io import BytesIO
 
 st.set_page_config(page_title="FINAL NOON SKU WISE", page_icon="🕛", layout="wide")
 
-# Noon Brand Logic
+# Master Noon Brand Mapping
 BRAND_MAP = {
     'maison_de_lavenir': 'Maison de l’Avenir',
     'creation_lamis': 'Creation Lamis',
@@ -16,40 +16,30 @@ BRAND_MAP = {
 }
 
 def clean_numeric(val):
-    """Deep clean currency and commas to return pure numbers."""
     if isinstance(val, str):
         cleaned = val.replace('AED', '').replace('$', '').replace('\xa0', '').replace(',', '').strip()
         try: return pd.to_numeric(cleaned)
         except: return 0.0
     return val if isinstance(val, (int, float)) else 0.0
 
-def find_robust_col(df, keywords, default_idx=None):
-    """Finds a column name safely without allowing duplicates."""
-    cols = df.columns.tolist()
-    for col in cols:
-        if any(kw.lower() == str(col).lower().strip() for kw in keywords):
-            return col
-    for col in cols:
+def find_robust_col(df, keywords):
+    """Deep keyword search across headers."""
+    for col in df.columns:
         if any(kw.lower() in str(col).lower().strip() for kw in keywords):
             return col
-    if default_idx is not None and len(cols) > default_idx:
-        return cols[default_idx]
     return None
 
 st.title("🕛 FINAL NOON SKU WISE")
-st.info("Universal Noon Audit: Optimized for Multi-SKU Files and Stock Integration")
+st.info("Verified Framework: SKU-Level Multi-Tab Mapping, Stock Integration, and Velocity tracking")
 
 st.sidebar.header("Upload Noon Reports")
 sales_file = st.sidebar.file_uploader("1. Noon Sales Export", type=["csv", "xlsx", "xls"])
-ad_file = st.sidebar.file_uploader("2. Noon Ad SKU Report", type=["csv", "xlsx", "xls"])
+ad_file = st.sidebar.file_uploader("2. Noon Ad (Product) SKU Report", type=["csv", "xlsx", "xls"])
 inv_file = st.sidebar.file_uploader("3. Noon Inventory Report", type=["csv", "xlsx", "xls"])
 
 if sales_file and ad_file:
     def load_df(file):
-        if file.name.endswith('.csv'):
-            df = pd.read_csv(file)
-        else:
-            df = pd.read_excel(file)
+        df = pd.read_csv(file) if file.name.endswith('.csv') else pd.read_excel(file)
         df.columns = [str(c).strip() for c in df.columns]
         return df
 
@@ -57,16 +47,15 @@ if sales_file and ad_file:
     ads_raw = load_df(ad_file)
     inv_raw = load_df(inv_file) if inv_file else None
 
-    # 1. Flexible Column Identification
-    ad_sku_col = find_robust_col(ads_raw, ['sku', 'product sku'], default_idx=1)
-    ad_camp_col = find_robust_col(ads_raw, ['campaign'], default_idx=0)
-    
-    sl_sku_col = find_robust_col(sales_raw, ['sku'], default_idx=5)
+    # 1. Identify Key Columns
+    ad_sku_col = find_robust_col(ads_raw, ['sku'])
+    ad_camp_col = find_robust_col(ads_raw, ['campaign'])
+    sl_sku_col = find_robust_col(sales_raw, ['sku'])
     sl_psku_col = find_robust_col(sales_raw, ['partner_sku', 'partner sku'])
     sl_sales_col = find_robust_col(sales_raw, ['gmv_lcy', 'revenue', 'price'])
     sl_brand_col = find_robust_col(sales_raw, ['brand_code', 'brand'])
 
-    # 2. Map Ad Metrics safely
+    # 2. Cleanup Metrics
     ad_metrics_map = {
         'Spend': find_robust_col(ads_raw, ['spends', 'spend']),
         'AdSales': find_robust_col(ads_raw, ['revenue', 'sales']),
@@ -74,24 +63,24 @@ if sales_file and ad_file:
         'Views': find_robust_col(ads_raw, ['views', 'impressions']),
         'Orders': find_robust_col(ads_raw, ['orders'])
     }
-    
     for k, col in ad_metrics_map.items():
         if col: ads_raw[col] = ads_raw[col].apply(clean_numeric)
     sales_raw[sl_sales_col] = sales_raw[sl_sales_col].apply(clean_numeric)
 
-    # 3. Aggregate Sales (Fixing the ValueError by specifying unique as_index names)
+    # 3. Process Sales (SKU Master)
     sales_grouped = sales_raw.groupby([sl_sku_col, sl_psku_col, sl_brand_col])[sl_sales_col].sum().reset_index()
     sales_grouped.columns = ['Noon SKU', 'Partner SKU', 'Brand_Key', 'Total Sales']
     sales_grouped['Brand'] = sales_grouped['Brand_Key'].map(BRAND_MAP).fillna(sales_grouped['Brand_Key'])
 
-    # 4. Aggregate Ads (Handling multi-campaign SKUs)
+    # 4. Process Ads (Campaign Level)
     ads_agg_cols = {col: 'sum' for col in ad_metrics_map.values() if col}
     ads_campaign_grouped = ads_raw.groupby([ad_camp_col, ad_sku_col]).agg(ads_agg_cols).reset_index()
     
+    # SKU-level Ad Totals for Organic subtraction
     ads_sku_totals = ads_raw.groupby(ad_sku_col).agg({ad_metrics_map['AdSales']: 'sum', ad_metrics_map['Spend']: 'sum'}).reset_index()
     ads_sku_totals.columns = ['Ad_SKU_Match', 'SKU_AD_SALES', 'SKU_AD_SPEND']
 
-    # 5. Inventory Processing
+    # 5. Process Inventory
     if inv_raw is not None:
         iv_sku_col = find_robust_col(inv_raw, ['sku'])
         iv_qty_col = find_robust_col(inv_raw, ['qty', 'available'])
@@ -100,30 +89,30 @@ if sales_file and ad_file:
     else:
         inv_grouped = pd.DataFrame(columns=['Inv_SKU_Match', 'Stock'])
 
-    # 6. Final Merge
+    # 6. Master Merge
     merged = pd.merge(sales_grouped, ads_campaign_grouped, left_on='Noon SKU', right_on=ad_sku_col, how='left')
     merged = pd.merge(merged, ads_sku_totals, left_on='Noon SKU', right_on='Ad_SKU_Match', how='left').fillna(0)
     merged = pd.merge(merged, inv_grouped, left_on='Noon SKU', right_on='Inv_SKU_Match', how='left').fillna(0)
 
-    # Clean Up UI Names
+    # Metrics Logic
     merged['Campaign'] = merged[ad_camp_col].apply(lambda x: x if x != 0 and str(x).strip() != "" else "Organic")
     merged['Organic Sales'] = merged['Total Sales'] - merged['SKU_AD_SALES']
     merged['DRR'] = merged['Total Sales'] / 30
     
-    # KPI Ratios
+    # Efficiency Calculations
     merged['ROAS'] = (merged[ad_metrics_map['AdSales']] / merged[ad_metrics_map['Spend']]).replace([np.inf, -np.inf], 0).fillna(0)
     merged['ACOS'] = (merged[ad_metrics_map['Spend']] / merged[ad_metrics_map['AdSales']]).replace([np.inf, -np.inf], 0).fillna(0)
     merged['TACOS'] = (merged['SKU_AD_TOTAL_SPEND'] / merged['Total Sales']).replace([np.inf, -np.inf], 0).fillna(0)
     merged['CTR'] = (merged[ad_metrics_map['Clicks']] / merged[ad_metrics_map['Views']]).replace([np.inf, -np.inf], 0).fillna(0)
     merged['CVR'] = (merged[ad_metrics_map['Orders']] / merged[ad_metrics_map['Clicks']]).replace([np.inf, -np.inf], 0).fillna(0)
 
-    # 7. Dashboard Engine
+    # 7. Multi-Tab Dashboard
     def show_metrics(raw_sales, raw_ads):
         t_sales = raw_sales[sl_sales_col].sum()
         a_sales = raw_ads[ad_metrics_map['AdSales']].sum()
-        t_spend = raw_ads[ad_metrics_map['Spend']].sum()
+        t_spend = raw_ads[ad_metrics_map['Spend'].sum()] if isinstance(ad_metrics_map['Spend'], str) else raw_ads[ad_metrics_map['Spend']].sum()
         
-        st.markdown("#### 💰 Portfolio Health (Pure Numbers)")
+        st.markdown("#### 💰 Portfolio Overview (Pure Numbers)")
         c1, c2, c3, c4 = st.columns(4)
         c1.metric("Total Sales", f"{t_sales:,.2f}")
         c2.metric("Ad Sales", f"{a_sales:,.2f}")
@@ -141,7 +130,7 @@ if sales_file and ad_file:
     table_cols = ['Campaign', 'Partner SKU', 'Noon SKU', 'Stock', 'Total Sales', 'DRR', 'Ad Sales (Campaign)', 'Ad Spend', 'Organic Sales', 'ROAS', 'ACOS', 'TACOS', 'CTR', 'CVR']
 
     with tabs[0]:
-        st.subheader("Global Portfolio Dashboard")
+        st.subheader("Global Performance")
         show_metrics(sales_raw, ads_raw)
         st.divider()
         st.dataframe(merged[table_cols].sort_values(by='Total Sales', ascending=False), hide_index=True, use_container_width=True)
@@ -158,12 +147,11 @@ if sales_file and ad_file:
                 show_metrics(b_sales, b_ads)
                 st.divider()
                 st.dataframe(b_table[table_cols].sort_values(by='Total Sales', ascending=False), hide_index=True, use_container_width=True)
-            else:
-                st.warning(f"No data found for {b_name}.")
 
+    # Unified Export
     output = BytesIO()
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
         merged[table_cols].to_excel(writer, sheet_name='MASTER_AUDIT', index=False)
-    st.sidebar.download_button("📥 Download Master Report", data=output.getvalue(), file_name="Noon_Final_Audit.xlsx", use_container_width=True)
+    st.sidebar.download_button("📥 Download Master Report", data=output.getvalue(), file_name="Noon_Master_Audit.xlsx", use_container_width=True)
 else:
-    st.info("Upload Sales, Ad SKU, and Inventory reports to begin.")
+    st.info("Upload Sales, Ad SKU, and Inventory reports to begin the audit.")
